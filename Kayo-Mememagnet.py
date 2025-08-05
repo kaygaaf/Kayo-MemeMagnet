@@ -7,6 +7,9 @@ import os
 import tempfile
 import tweepy  # pip install tweepy
 import configparser
+import html
+import traceback
+from urllib.parse import urlparse, unquote
 
 class KayoMemeMagnetApp:
     def __init__(self, root):
@@ -17,74 +20,55 @@ class KayoMemeMagnetApp:
         self.posted_urls = self.load_posted_urls()
         self.config_file = 'config.ini'
         self.config = configparser.ConfigParser()
-
         # Set modern theme
         customtkinter.set_appearance_mode("System")  # Auto light/dark
         customtkinter.set_default_color_theme("blue")  # Clean blue theme
-
         # Input Frame
         input_frame = customtkinter.CTkFrame(root, corner_radius=10)
         input_frame.pack(pady=10, padx=10, fill="x")
-
         customtkinter.CTkLabel(input_frame, text="X Consumer Key:").grid(row=0, column=0, sticky="w", pady=5)
         self.consumer_key = customtkinter.CTkEntry(input_frame)
         self.consumer_key.grid(row=0, column=1, sticky="ew", pady=5)
-
         customtkinter.CTkLabel(input_frame, text="X Consumer Secret:").grid(row=1, column=0, sticky="w", pady=5)
         self.consumer_secret = customtkinter.CTkEntry(input_frame, show="*")
         self.consumer_secret.grid(row=1, column=1, sticky="ew", pady=5)
-
         customtkinter.CTkLabel(input_frame, text="X Access Token:").grid(row=2, column=0, sticky="w", pady=5)
         self.access_token = customtkinter.CTkEntry(input_frame)
         self.access_token.grid(row=2, column=1, sticky="ew", pady=5)
-
         customtkinter.CTkLabel(input_frame, text="X Access Secret:").grid(row=3, column=0, sticky="w", pady=5)
         self.access_secret = customtkinter.CTkEntry(input_frame, show="*")
         self.access_secret.grid(row=3, column=1, sticky="ew", pady=5)
-
         customtkinter.CTkLabel(input_frame, text="Subreddits (comma-separated):").grid(row=4, column=0, sticky="w", pady=5)
         self.subreddits_entry = customtkinter.CTkEntry(input_frame)
         self.subreddits_entry.grid(row=4, column=1, sticky="ew", pady=5)
-
         customtkinter.CTkLabel(input_frame, text="Interval (minutes):").grid(row=5, column=0, sticky="w", pady=5)
         self.interval_entry = customtkinter.CTkEntry(input_frame)
         self.interval_entry.grid(row=5, column=1, sticky="ew", pady=5)
-
         customtkinter.CTkLabel(input_frame, text="Max Posts per Cycle:").grid(row=6, column=0, sticky="w", pady=5)
         self.max_posts_entry = customtkinter.CTkEntry(input_frame)
         self.max_posts_entry.grid(row=6, column=1, sticky="ew", pady=5)
-
         customtkinter.CTkLabel(input_frame, text="Min Upvotes:").grid(row=7, column=0, sticky="w", pady=5)
         self.min_upvotes_entry = customtkinter.CTkEntry(input_frame)
         self.min_upvotes_entry.grid(row=7, column=1, sticky="ew", pady=5)
-
         input_frame.columnconfigure(1, weight=1)  # Expand entry fields
-
         # Button Frame
         button_frame = customtkinter.CTkFrame(root, corner_radius=10)
         button_frame.pack(pady=10, padx=10, fill="x")
-
         self.start_button = customtkinter.CTkButton(button_frame, text="Start", command=self.start)
         self.start_button.pack(side="left", padx=5)
-
         self.stop_button = customtkinter.CTkButton(button_frame, text="Stop", command=self.stop, state="disabled")
         self.stop_button.pack(side="left", padx=5)
-
         self.save_config_button = customtkinter.CTkButton(button_frame, text="Save Config", command=self.save_config)
         self.save_config_button.pack(side="left", padx=5)
-
         self.clear_log_button = customtkinter.CTkButton(button_frame, text="Clear Log", command=self.clear_log)
         self.clear_log_button.pack(side="left", padx=5)
-
         # Status Label
         self.status_label = customtkinter.CTkLabel(root, text="Status: Stopped", corner_radius=5)
         self.status_label.pack(pady=5, padx=10, fill="x")
-
         # Log Textbox
         self.log_text = customtkinter.CTkTextbox(root, wrap="word", height=150)
         self.log_text.pack(pady=10, padx=10, fill="both", expand=True)
         self.log_text.configure(state="disabled")  # Read-only
-
         # Now load config after all GUI elements are created
         self.load_config()
         self.log("App ready. Load or enter details and save config.")
@@ -160,21 +144,30 @@ class KayoMemeMagnetApp:
                 continue
             media_url = p_data['url']
             permalink = f"https://reddit.com{p_data['permalink']}"
+            media_url = html.unescape(media_url)  # Unescape any &amp; in URLs
             if p_data.get('is_video'):
                 if 'secure_media' in p_data and p_data['secure_media'] and 'reddit_video' in p_data['secure_media']:
                     media_url = p_data['secure_media']['reddit_video']['fallback_url']
+                    media_url = html.unescape(media_url)
                     memes.append({'title': p_data['title'], 'url': media_url, 'is_video': True, 'permalink': permalink})
             elif media_url.endswith(('.jpg', '.png', '.gif')):
                 memes.append({'title': p_data['title'], 'url': media_url, 'is_video': False, 'permalink': permalink})
         return memes
 
     def download_media(self, url):
-        _, ext = os.path.splitext(url)
+        from urllib.parse import urlparse, unquote
+        # Parse URL and get the path, then unquote to handle special characters
+        parsed_url = urlparse(url)
+        filename = os.path.basename(unquote(parsed_url.path))
+        _, ext = os.path.splitext(filename)
+        if not ext:  # Fallback if no extension (e.g., video URLs)
+            ext = '.mp4' if 'video' in url else '.jpg'
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp_file:
-            with urllib.request.urlopen(url) as response:
+            req = urllib.request.Request(url, headers={'User-Agent': 'KayoMemeMagnet/1.0'})
+            with urllib.request.urlopen(req) as response:
                 tmp_file.write(response.read())
         file_size = os.path.getsize(tmp_file.name)
-        if file_size > 512 * 1024 * 1024: # X limit for videos
+        if file_size > 512 * 1024 * 1024:  # X limit for videos
             os.remove(tmp_file.name)
             raise ValueError(f"Media too large: {file_size / (1024*1024):.2f} MB")
         return tmp_file.name
@@ -194,6 +187,7 @@ class KayoMemeMagnetApp:
         interval = int(self.interval_entry.get()) * 60
         max_posts = int(self.max_posts_entry.get())
         min_upvotes = int(self.min_upvotes_entry.get())
+        self.log(f"Starting loop with interval: {interval // 60} minutes, max_posts: {max_posts}, min_upvotes: {min_upvotes}")
         while self.running:
             try:
                 self.status_label.configure(text="Status: Fetching...")
@@ -215,14 +209,16 @@ class KayoMemeMagnetApp:
                             if posted_count >= max_posts:
                                 break
                         except Exception as e:
-                            self.log(f"Skip: {str(e)}")
+                            self.log(f"Skip: {str(e)} for URL: {meme['url']}\n{traceback.format_exc()}")
                     if posted_count >= max_posts:
                         break
-                self.log(f"Cycle complete. Sleeping for {interval // 60} minutes.")
+                self.log(f"Cycle complete. Sleeping for {interval / 60:.2f} minutes.")
                 self.status_label.configure(text="Status: Sleeping")
+                actual_sleep = time.time() + interval
+                time.sleep(interval)
+                self.log(f"Woke up after {(time.time() - actual_sleep + interval) / 60:.2f} minutes.")
             except Exception as e:
-                self.log(f"Error in cycle: {str(e)}")
-            time.sleep(interval)
+                self.log(f"Error in cycle: {str(e)}\n{traceback.format_exc()}")
         self.status_label.configure(text="Status: Stopped")
 
     def start(self):
