@@ -17,7 +17,6 @@ class KayoMemeMagnetApp:
         self.posted_urls = self.load_posted_urls()
         self.config_file = 'config.ini'
         self.config = configparser.ConfigParser()
-        self.load_config()
 
         # Set modern theme
         customtkinter.set_appearance_mode("System")  # Auto light/dark
@@ -45,22 +44,18 @@ class KayoMemeMagnetApp:
 
         customtkinter.CTkLabel(input_frame, text="Subreddits (comma-separated):").grid(row=4, column=0, sticky="w", pady=5)
         self.subreddits_entry = customtkinter.CTkEntry(input_frame)
-        self.subreddits_entry.insert(0, "memes,dankmemes")
         self.subreddits_entry.grid(row=4, column=1, sticky="ew", pady=5)
 
         customtkinter.CTkLabel(input_frame, text="Interval (minutes):").grid(row=5, column=0, sticky="w", pady=5)
         self.interval_entry = customtkinter.CTkEntry(input_frame)
-        self.interval_entry.insert(0, "60")
         self.interval_entry.grid(row=5, column=1, sticky="ew", pady=5)
 
         customtkinter.CTkLabel(input_frame, text="Max Posts per Cycle:").grid(row=6, column=0, sticky="w", pady=5)
         self.max_posts_entry = customtkinter.CTkEntry(input_frame)
-        self.max_posts_entry.insert(0, "3")
         self.max_posts_entry.grid(row=6, column=1, sticky="ew", pady=5)
 
         customtkinter.CTkLabel(input_frame, text="Min Upvotes:").grid(row=7, column=0, sticky="w", pady=5)
         self.min_upvotes_entry = customtkinter.CTkEntry(input_frame)
-        self.min_upvotes_entry.insert(0, "1000")
         self.min_upvotes_entry.grid(row=7, column=1, sticky="ew", pady=5)
 
         input_frame.columnconfigure(1, weight=1)  # Expand entry fields
@@ -90,6 +85,8 @@ class KayoMemeMagnetApp:
         self.log_text.pack(pady=10, padx=10, fill="both", expand=True)
         self.log_text.configure(state="disabled")  # Read-only
 
+        # Now load config after all GUI elements are created
+        self.load_config()
         self.log("App ready. Load or enter details and save config.")
 
     def log(self, message):
@@ -106,17 +103,22 @@ class KayoMemeMagnetApp:
     def load_config(self):
         if os.path.exists(self.config_file):
             self.config.read(self.config_file)
-            if 'X' in self.config:
-                self.consumer_key.insert(0, self.config['X'].get('consumer_key', ''))
-                self.consumer_secret.insert(0, self.config['X'].get('consumer_secret', ''))
-                self.access_token.insert(0, self.config['X'].get('access_token', ''))
-                self.access_secret.insert(0, self.config['X'].get('access_secret', ''))
-            if 'Settings' in self.config:
-                self.subreddits_entry.insert(0, self.config['Settings'].get('subreddits', 'memes,dankmemes'))
-                self.interval_entry.insert(0, self.config['Settings'].get('interval', '60'))
-                self.max_posts_entry.insert(0, self.config['Settings'].get('max_posts', '3'))
-                self.min_upvotes_entry.insert(0, self.config['Settings'].get('min_upvotes', '1000'))
-            self.log("Config loaded.")
+            try:
+                if 'X' in self.config:
+                    self.consumer_key.insert(0, self.config['X'].get('consumer_key', ''))
+                    self.consumer_secret.insert(0, self.config['X'].get('consumer_secret', ''))
+                    self.access_token.insert(0, self.config['X'].get('access_token', ''))
+                    self.access_secret.insert(0, self.config['X'].get('access_secret', ''))
+                if 'Settings' in self.config:
+                    self.subreddits_entry.insert(0, self.config['Settings'].get('subreddits', 'memes,dankmemes'))
+                    self.interval_entry.insert(0, self.config['Settings'].get('interval', '60'))
+                    self.max_posts_entry.insert(0, self.config['Settings'].get('max_posts', '3'))
+                    self.min_upvotes_entry.insert(0, self.config['Settings'].get('min_upvotes', '1000'))
+                self.log("Config loaded.")
+            except Exception as e:
+                self.log(f"Error loading config: {str(e)}. Using defaults.")
+        else:
+            self.log("No config file found. Using defaults.")
 
     def save_config(self):
         self.config['X'] = {
@@ -172,7 +174,7 @@ class KayoMemeMagnetApp:
             with urllib.request.urlopen(url) as response:
                 tmp_file.write(response.read())
         file_size = os.path.getsize(tmp_file.name)
-        if file_size > 512 * 1024 * 1024:  # X limit for videos
+        if file_size > 512 * 1024 * 1024: # X limit for videos
             os.remove(tmp_file.name)
             raise ValueError(f"Media too large: {file_size / (1024*1024):.2f} MB")
         return tmp_file.name
@@ -182,7 +184,6 @@ class KayoMemeMagnetApp:
         api = tweepy.API(auth)
         client = tweepy.Client(consumer_key=self.consumer_key.get(), consumer_secret=self.consumer_secret.get(),
                                access_token=self.access_token.get(), access_token_secret=self.access_secret.get())
-
         media = api.media_upload(media_path)
         tweet_text = f"{title} (Source: {permalink})"
         client.create_tweet(text=tweet_text, media_ids=[media.media_id])
