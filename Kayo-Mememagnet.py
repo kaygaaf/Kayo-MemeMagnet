@@ -185,7 +185,7 @@ class KayoMemeMagnetApp:
         client = tweepy.Client(consumer_key=self.consumer_key.get(), consumer_secret=self.consumer_secret.get(),
                                access_token=self.access_token.get(), access_token_secret=self.access_secret.get())
         media = api.media_upload(media_path)
-        tweet_text = f"{title} (Source: {permalink})"
+        tweet_text = f"{title} (Source: {permalink}) Kayo-MemeMagnet"
         client.create_tweet(text=tweet_text, media_ids=[media.media_id])
         self.log(f"Posted: {tweet_text}")
 
