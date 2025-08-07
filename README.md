@@ -23,3 +23,9 @@ A slick Python app with a modern GUI to automatically snatch the hottest memes a
 1. Clone the repo:
    ```bash
    git clone https://github.com/kaygaaf/Kayo-MemeMagnet.git
+
+## Beta
+
+I have added a beta version which will be more complex and have more features, but also more prone to bugs and errors.
+
+
