@@ -14,9 +14,6 @@ import ffmpeg # pip install ffmpeg-python
 from PIL import Image # pip install pillow
 import base64
 
-# Diagnostic print - can be removed after confirmation
-print(f"FFmpeg module path: {ffmpeg.__file__}")
-
 class KayoMemeMagnetApp:
     def __init__(self, root):
         self.root = root
