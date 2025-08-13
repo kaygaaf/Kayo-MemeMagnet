@@ -1,15 +1,21 @@
-import customtkinter  # pip install customtkinter
+import customtkinter # pip install customtkinter
 import threading
 import time
-import urllib.request
+import requests
 import json
 import os
 import tempfile
-import tweepy  # pip install tweepy
+import tweepy # pip install tweepy
 import configparser
 import html
 import traceback
 from urllib.parse import urlparse, unquote
+import ffmpeg # pip install ffmpeg-python
+from PIL import Image # pip install pillow
+import base64
+
+# Diagnostic print - can be removed after confirmation
+print(f"FFmpeg module path: {ffmpeg.__file__}")
 
 class KayoMemeMagnetApp:
     def __init__(self, root):
@@ -20,10 +26,8 @@ class KayoMemeMagnetApp:
         self.posted_urls = self.load_posted_urls()
         self.config_file = 'config.ini'
         self.config = configparser.ConfigParser()
-        # Set modern theme
-        customtkinter.set_appearance_mode("System")  # Auto light/dark
-        customtkinter.set_default_color_theme("blue")  # Clean blue theme
-        # Input Frame
+        customtkinter.set_appearance_mode("System")
+        customtkinter.set_default_color_theme("blue")
         input_frame = customtkinter.CTkFrame(root, corner_radius=10)
         input_frame.pack(pady=10, padx=10, fill="x")
         customtkinter.CTkLabel(input_frame, text="X Consumer Key:").grid(row=0, column=0, sticky="w", pady=5)
@@ -50,8 +54,7 @@ class KayoMemeMagnetApp:
         customtkinter.CTkLabel(input_frame, text="Min Upvotes:").grid(row=7, column=0, sticky="w", pady=5)
         self.min_upvotes_entry = customtkinter.CTkEntry(input_frame)
         self.min_upvotes_entry.grid(row=7, column=1, sticky="ew", pady=5)
-        input_frame.columnconfigure(1, weight=1)  # Expand entry fields
-        # Button Frame
+        input_frame.columnconfigure(1, weight=1)
         button_frame = customtkinter.CTkFrame(root, corner_radius=10)
         button_frame.pack(pady=10, padx=10, fill="x")
         self.start_button = customtkinter.CTkButton(button_frame, text="Start", command=self.start)
@@ -62,14 +65,11 @@ class KayoMemeMagnetApp:
         self.save_config_button.pack(side="left", padx=5)
         self.clear_log_button = customtkinter.CTkButton(button_frame, text="Clear Log", command=self.clear_log)
         self.clear_log_button.pack(side="left", padx=5)
-        # Status Label
         self.status_label = customtkinter.CTkLabel(root, text="Status: Stopped", corner_radius=5)
         self.status_label.pack(pady=5, padx=10, fill="x")
-        # Log Textbox
         self.log_text = customtkinter.CTkTextbox(root, wrap="word", height=150)
         self.log_text.pack(pady=10, padx=10, fill="both", expand=True)
-        self.log_text.configure(state="disabled")  # Read-only
-        # Now load config after all GUI elements are created
+        self.log_text.configure(state="disabled")
         self.load_config()
         self.log("App ready. Load or enter details and save config.")
 
@@ -133,92 +133,383 @@ class KayoMemeMagnetApp:
 
     def fetch_popular_memes(self, subreddit, limit, min_upvotes):
         url = f"https://www.reddit.com/r/{subreddit}/hot.json?limit={limit}"
-        req = urllib.request.Request(url, headers={'User-Agent': 'KayoMemeMagnet/1.0'})
-        with urllib.request.urlopen(req) as response:
-            data = json.loads(response.read().decode())
+        headers = {'User-Agent': 'KayoMemeMagnet/1.0'}
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
         posts = data['data']['children']
         memes = []
         for post in posts:
             p_data = post['data']
             if p_data['score'] < min_upvotes:
                 continue
-            media_url = p_data['url']
+            media_url = html.unescape(p_data['url'])
             permalink = f"https://reddit.com{p_data['permalink']}"
-            media_url = html.unescape(media_url)  # Unescape any &amp; in URLs
+            title = html.unescape(p_data['title'])
             if p_data.get('is_video'):
                 if 'secure_media' in p_data and p_data['secure_media'] and 'reddit_video' in p_data['secure_media']:
-                    media_url = p_data['secure_media']['reddit_video']['fallback_url']
-                    media_url = html.unescape(media_url)
-                    memes.append({'title': p_data['title'], 'url': media_url, 'is_video': True, 'permalink': permalink})
+                    video_url = html.unescape(p_data['secure_media']['reddit_video']['fallback_url']).split('?')[0]
+                    audio_url = None
+                    if p_data['secure_media']['reddit_video'].get('has_audio'):
+                        base = video_url.rsplit('/', 1)[0]
+                        audio_url = base + '/DASH_audio.mp4'
+                    if audio_url:
+                        memes.append({'title': title, 'video_url': video_url, 'audio_url': audio_url, 'is_video': True, 'permalink': permalink})
+                    else:
+                        memes.append({'title': title, 'url': video_url, 'is_video': True, 'permalink': permalink})
             elif media_url.endswith(('.jpg', '.png', '.gif')):
-                memes.append({'title': p_data['title'], 'url': media_url, 'is_video': False, 'permalink': permalink})
+                memes.append({'title': title, 'url': media_url, 'is_video': False, 'permalink': permalink})
         return memes
 
-    def download_media(self, url):
-        from urllib.parse import urlparse, unquote
-        # Parse URL and get the path, then unquote to handle special characters
-        parsed_url = urlparse(url)
-        filename = os.path.basename(unquote(parsed_url.path))
-        _, ext = os.path.splitext(filename)
-        if not ext:  # Fallback if no extension (e.g., video URLs)
-            ext = '.mp4' if 'video' in url else '.jpg'
-        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp_file:
-            req = urllib.request.Request(url, headers={'User-Agent': 'KayoMemeMagnet/1.0'})
-            with urllib.request.urlopen(req) as response:
-                tmp_file.write(response.read())
-        file_size = os.path.getsize(tmp_file.name)
-        if file_size > 512 * 1024 * 1024:  # X limit for videos
-            os.remove(tmp_file.name)
-            raise ValueError(f"Media too large: {file_size / (1024*1024):.2f} MB")
-        return tmp_file.name
+    def get_media_info(self, path, title):
+        ext = os.path.splitext(path)[1].lower()
+        if ext in ('.jpg', '.png', '.gif'):
+            try:
+                with Image.open(path) as img:
+                    width, height = img.size
+                    file_size = os.path.getsize(path)
+                    is_image = True
+                    if ext == '.gif':
+                        try:
+                            img.seek(1)
+                            is_image = False # Animated
+                        except EOFError:
+                            is_image = True
+                    has_audio = False
+                    duration = 0
+                    bitrate = 'N/A'
+                    fps = 'N/A'
+                    codec = img.format.lower()
+                    audio_codec = 'N/A'
+                log_msg = f"Analyzed {title}: {'Image' if is_image else 'Animated GIF'}, size: {file_size / 1024:.2f} KB, resolution: {width}x{height}"
+                if not is_image:
+                    log_msg += f", codec: {codec}"
+                self.log(log_msg)
+                return {
+                    'is_image': is_image,
+                    'has_audio': has_audio,
+                    'duration': duration,
+                    'file_size': file_size,
+                    'width': width,
+                    'height': height
+                }
+            except Exception as e:
+                self.log(f"Failed to analyze image {title} with PIL: {str(e)}")
+                raise
+        else:
+            try:
+                probe = ffmpeg.probe(path)
+                format_info = probe.get('format', {})
+                duration = float(format_info.get('duration', 0))
+                file_size = int(format_info.get('size', 0))
+                bitrate = int(format_info.get('bit_rate', 0)) // 1000 if 'bit_rate' in format_info else 'N/A'
+                video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
+                width, height, codec = 'N/A', 'N/A', 'N/A'
+                fps = 'N/A'
+                if video_stream:
+                    width = video_stream.get('width', 'N/A')
+                    height = video_stream.get('height', 'N/A')
+                    codec = video_stream.get('codec_name', 'N/A')
+                    fps = video_stream.get('r_frame_rate', 'N/A')
+                audio_stream = next((s for s in probe['streams'] if s['codec_type'] == 'audio'), None)
+                has_audio = bool(audio_stream)
+                audio_codec = audio_stream.get('codec_name', 'N/A') if audio_stream else 'N/A'
+                is_image = duration == 0 or int(video_stream.get('nb_frames', 1)) <= 1
+                log_msg = f"Analyzed {title}: {'Image' if is_image else 'Video'}, size: {file_size / 1024:.2f} KB, resolution: {width}x{height}, fps: {fps}"
+                if not is_image:
+                    log_msg += f", duration: {duration:.2f}s, bitrate: {bitrate} kbps"
+                log_msg += f", video_codec: {codec}, has_audio: {has_audio}, audio_codec: {audio_codec}"
+                self.log(log_msg)
+                return {
+                    'is_image': is_image,
+                    'has_audio': has_audio,
+                    'duration': duration,
+                    'file_size': file_size,
+                    'width': width,
+                    'height': height
+                }
+            except ffmpeg.Error as e:
+                self.log(f"Failed to probe video for {title}: FFmpeg error - {str(e)}. Check if FFmpeg is installed and in PATH.")
+                raise
+            except Exception as e:
+                self.log(f"Failed to probe video for {title}: {str(e)}. Skipping video processing.")
+                raise
+
+    def compress_media(self, path, ext, info, title, max_size):
+        file_size = info['file_size']
+        if file_size <= max_size:
+            return path
+        self.log(f"Compressing {title} from {file_size / 1024 / 1024:.2f} MB to fit under {max_size / 1024 / 1024:.2f} MB limit")
+        temp_dir = os.path.dirname(path)
+        converted_path = os.path.join(temp_dir, f"compressed{ext}")
+        try:
+            if info['is_image']:
+                with Image.open(path) as img:
+                    if ext == '.jpg':
+                        img.save(converted_path, quality=85, optimize=True)
+                    elif ext == '.png':
+                        img.save(converted_path, optimize=True, compress_level=9)
+                    elif ext == '.gif':
+                        if not info['is_image']:
+                            self.log(f"Converting animated GIF {title} to MP4")
+                            converted_path = os.path.join(temp_dir, "compressed.mp4")
+                            ffmpeg.input(path).output(converted_path, vcodec='libx264', crf=28, preset='fast', format='mp4').run(overwrite_output=True)
+                            ext = '.mp4'
+                        else:
+                            img.convert('RGB').save(converted_path.replace('.gif', '.jpg'), quality=85, optimize=True)
+                            converted_path = converted_path.replace('.gif', '.jpg')
+                            ext = '.jpg'
+                    new_size = os.path.getsize(converted_path)
+                    if new_size > max_size:
+                        scale_factor = (max_size / new_size) ** 0.5 * 0.9
+                        new_width = int(info['width'] * scale_factor)
+                        new_height = int(info['height'] * scale_factor)
+                        resized_img = img.resize((new_width, new_height), Image.LANCZOS)
+                        if ext == '.jpg':
+                            resized_img.save(converted_path, quality=75, optimize=True)
+                        elif ext == '.png':
+                            resized_img.save(converted_path, optimize=True, compress_level=9)
+            else:
+                out = ffmpeg.input(path).output(
+                    converted_path,
+                    vcodec='libx264',
+                    acodec='aac' if info['has_audio'] else None,
+                    preset='fast',
+                    crf=28,
+                    b_v='1M',
+                    b_a='128k' if info['has_audio'] else None,
+                    s='640x360' if info['width'] > 640 else None,
+                    format='mp4',
+                    shortest=None
+                )
+                self.log(f"Running FFmpeg compression command: {out.compile()}")
+                ffmpeg.run(out, overwrite_output=True)
+            os.remove(path)
+            new_info = self.get_media_info(converted_path, title)
+            new_size = os.path.getsize(converted_path)
+            if new_size > max_size:
+                os.remove(converted_path)
+                raise ValueError(f"Compressed media still too large: {new_size / 1024 / 1024:.2f} MB")
+            self.log(f"Compressed {title} to {new_size / 1024 / 1024:.2f} MB")
+            return converted_path
+        except Exception as e:
+            if os.path.exists(converted_path):
+                os.remove(converted_path)
+            raise ValueError(f"Compression failed: {str(e)}")
+
+    def download_media(self, meme):
+        temp_dir = tempfile.mkdtemp()
+        video_path = audio_path = output_path = None
+        try:
+            if 'video_url' in meme and 'audio_url' in meme:
+                video_url = meme['video_url']
+                audio_url = meme['audio_url']
+                parsed = urlparse(video_url)
+                filename = os.path.basename(unquote(parsed.path))
+                ext = os.path.splitext(filename)[1] or '.mp4'
+                video_path = os.path.join(temp_dir, f"video{ext}")
+                audio_path = os.path.join(temp_dir, "audio.mp3")
+                self.log(f"Downloading video for {meme['title']} from {video_url}")
+                with requests.get(video_url, headers={'User-Agent': 'KayoMemeMagnet/1.0'}, stream=True) as r:
+                    r.raise_for_status()
+                    with open(video_path, 'wb') as f:
+                        for chunk in r.iter_content(8192):
+                            f.write(chunk)
+                self.log(f"Downloaded video size: {os.path.getsize(video_path) / 1024:.2f} KB")
+                try:
+                    self.get_media_info(video_path, meme['title'] + " (video part)")
+                except Exception as e:
+                    self.log(f"Skipping video due to FFmpeg issue: {str(e)}")
+                    raise
+                self.log(f"Downloading audio for {meme['title']} from {audio_url}")
+                with requests.get(audio_url, headers={'User-Agent': 'KayoMemeMagnet/1.0'}, stream=True) as r:
+                    if r.status_code != 200:
+                        self.log(f"Audio download failed with status {r.status_code}, trying alternative URLs")
+                        alternative_urls = [
+                            audio_url.replace('DASH_audio.mp4', 'audio.mp4'),
+                            audio_url.replace('DASH_audio.mp4', 'DASH_AUDIO_128.mp4'),
+                            audio_url.replace('DASH_audio.mp4', 'DASH_AUDIO_64.mp4')
+                        ]
+                        for alt_url in alternative_urls:
+                            self.log(f"Trying alternative audio URL: {alt_url}")
+                            r = requests.get(alt_url, headers={'User-Agent': 'KayoMemeMagnet/1.0'}, stream=True)
+                            if r.status_code == 200:
+                                break
+                        r.raise_for_status()
+                    with open(audio_path, 'wb') as f:
+                        for chunk in r.iter_content(8192):
+                            f.write(chunk)
+                self.log(f"Downloaded audio size: {os.path.getsize(audio_path) / 1024:.2f} KB")
+                output_path = os.path.join(temp_dir, f"merged.mp4")
+                try:
+                    inputs = [ffmpeg.input(video_path), ffmpeg.input(audio_path)]
+                    out = ffmpeg.output(
+                        inputs[0]['v:0'], # Select video stream from first input
+                        inputs[1]['a:0'], # Select audio stream from second input
+                        output_path,
+                        vcodec='libx264',
+                        acodec='aac',
+                        preset='medium',
+                        crf=23,
+                        ar=44100,
+                        ac=2,
+                        format='mp4',
+                        shortest=None
+                    )
+                    self.log(f"Running FFmpeg merge command: {out.compile()}")
+                    ffmpeg.run(out, overwrite_output=True)
+                    os.remove(video_path)
+                    video_path = None
+                    os.remove(audio_path)
+                    audio_path = None
+                    info = self.get_media_info(output_path, meme['title'] + " (merged)")
+                    if not info['has_audio']:
+                        self.log(f"Warning: No audio detected after merge for {meme['title']}. Attempting to post video without audio.")
+                        os.remove(output_path)
+                        output_path = None
+                        return video_path # Fallback to video-only
+                    ext = '.mp4'
+                    max_size = 512 * 1024 * 1024 # Video limit for X
+                    output_path = self.compress_media(output_path, ext, info, meme['title'], max_size)
+                    return output_path
+                except ffmpeg.Error as e:
+                    self.log(f"FFmpeg merge failed for {meme['title']}: {str(e)}. Attempting to post video without audio.")
+                    if os.path.exists(video_path):
+                        info = self.get_media_info(video_path, meme['title'] + " (video only)")
+                        ext = '.mp4'
+                        max_size = 512 * 1024 * 1024
+                        video_path = self.compress_media(video_path, ext, info, meme['title'], max_size)
+                        return video_path
+                    raise
+            else:
+                url = meme['url']
+                parsed = urlparse(url)
+                filename = os.path.basename(unquote(parsed.path))
+                ext = os.path.splitext(filename)[1] or ('.mp4' if meme.get('is_video') else '.jpg')
+                path = os.path.join(temp_dir, f"media{ext}")
+                self.log(f"Downloading {'video' if meme.get('is_video') else 'image'} for {meme['title']} from {url}")
+                with requests.get(url, headers={'User-Agent': 'KayoMemeMagnet/1.0'}, stream=True) as r:
+                    r.raise_for_status()
+                    with open(path, 'wb') as f:
+                        for chunk in r.iter_content(8192):
+                            f.write(chunk)
+                self.log(f"Downloaded size: {os.path.getsize(path) / 1024:.2f} KB")
+                info = self.get_media_info(path, meme['title'])
+                if ext.lower() in ('.jpg', '.png', '.webp'):
+                    max_size = 5 * 1024 * 1024 # Image limit for X
+                elif ext.lower() == '.gif':
+                    max_size = 15 * 1024 * 1024 # GIF limit for X
+                else:
+                    max_size = 512 * 1024 * 1024 # Video limit for X
+                path = self.compress_media(path, ext, info, meme['title'], max_size)
+                return path
+        except Exception as e:
+            self.log(f"Download/processing failed for {meme['title']}: {str(e)}")
+            if video_path and os.path.exists(video_path):
+                os.remove(video_path)
+            if audio_path and os.path.exists(audio_path):
+                os.remove(audio_path)
+            if output_path and os.path.exists(output_path):
+                os.remove(output_path)
+            raise
+
+    def _format_tweet(self, title, permalink):
+        # Obfuscated trademark string
+        tm = base64.b64decode("S2F5by1NZW1lTWFnbmV0").decode('utf-8')
+        source_str = f" (Source: {permalink} {tm})"
+        max_title_len = 280 - len(source_str)
+        if len(title) > max_title_len:
+            title = title[:max_title_len - 3] + '...'
+        return title + source_str
 
     def post_to_x(self, title, permalink, media_path):
-        auth = tweepy.OAuth1UserHandler(self.consumer_key.get(), self.consumer_secret.get(), self.access_token.get(), self.access_secret.get())
-        api = tweepy.API(auth)
-        client = tweepy.Client(consumer_key=self.consumer_key.get(), consumer_secret=self.consumer_secret.get(),
-                               access_token=self.access_token.get(), access_token_secret=self.access_secret.get())
-        media = api.media_upload(media_path)
-        tweet_text = f"{title} (Source: {permalink}) Kayo-MemeMagnet"
-        client.create_tweet(text=tweet_text, media_ids=[media.media_id])
-        self.log(f"Posted: {tweet_text}")
+        try:
+            auth = tweepy.OAuth1UserHandler(self.consumer_key.get(), self.consumer_secret.get(), self.access_token.get(), self.access_secret.get())
+            api = tweepy.API(auth)
+            client = tweepy.Client(consumer_key=self.consumer_key.get(), consumer_secret=self.consumer_secret.get(),
+                                   access_token=self.access_token.get(), access_token_secret=self.access_secret.get())
+            media = api.media_upload(media_path)
+            tweet_text = self._format_tweet(title, permalink)
+            client.create_tweet(text=tweet_text, media_ids=[media.media_id])
+            self.log(f"Posted: {tweet_text}")
+            return True
+        except tweepy.errors.TweepyException as e:
+            self.log(f"Post failed: {str(e)} for {permalink}")
+            if e.response and e.response.status_code == 429:
+                self.log("Rate limit hit. Waiting 15 minutes...")
+                time.sleep(900)
+            return False
+        except Exception as e:
+            self.log(f"Unexpected post error: {str(e)}")
+            return False
 
     def run_loop(self):
         subreddits = [s.strip() for s in self.subreddits_entry.get().split(',')]
         interval = int(self.interval_entry.get()) * 60
         max_posts = int(self.max_posts_entry.get())
         min_upvotes = int(self.min_upvotes_entry.get())
-        self.log(f"Starting loop with interval: {interval // 60} minutes, max_posts: {max_posts}, min_upvotes: {min_upvotes}")
+        retry_delay = 300 # 5 minutes for retry if no posts
+        max_retries = 3 # Maximum retries if no posts
         while self.running:
             try:
-                self.status_label.configure(text="Status: Fetching...")
-                posted_count = 0
-                for subreddit in subreddits:
-                    self.log(f"Fetching from r/{subreddit}...")
-                    memes = self.fetch_popular_memes(subreddit, limit=50, min_upvotes=min_upvotes)
-                    for meme in memes:
-                        if meme['url'] in self.posted_urls:
-                            continue
-                        self.log(f"Processing: {meme['title']}")
-                        try:
-                            media_path = self.download_media(meme['url'])
-                            self.post_to_x(meme['title'], meme['permalink'], media_path)
-                            os.remove(media_path)
-                            self.posted_urls.add(meme['url'])
-                            self.save_posted_urls()
-                            posted_count += 1
+                retry_count = 0
+                while self.running and retry_count <= max_retries:
+                    self.status_label.configure(text="Status: Fetching...")
+                    self.log(f"Starting cycle: interval {interval//60} min, max_posts {max_posts}, min_upvotes {min_upvotes}, retry {retry_count + 1}/{max_retries + 1}")
+                    posted_count = 0
+                    for subreddit in subreddits:
+                        self.log(f"Fetching from r/{subreddit}")
+                        memes = self.fetch_popular_memes(subreddit, 100, min_upvotes) # Increased limit
+                        for meme in memes:
+                            url_key = meme.get('url') or meme.get('video_url')
+                            if url_key in self.posted_urls:
+                                self.log(f"Skipping duplicate: {meme['title']}")
+                                continue
+                            self.log(f"Processing: {meme['title']}")
+                            media_path = None
+                            try:
+                                media_path = self.download_media(meme)
+                                if self.post_to_x(meme['title'], meme['permalink'], media_path):
+                                    self.posted_urls.add(url_key)
+                                    self.save_posted_urls()
+                                    posted_count += 1
+                                if media_path and os.path.exists(media_path):
+                                    os.remove(media_path)
+                            except Exception as e:
+                                self.log(f"Skipped {meme['title']}: {str(e)}\n{traceback.format_exc()}")
+                                if media_path and os.path.exists(media_path):
+                                    os.remove(media_path)
+                                continue # Continue to next meme
                             if posted_count >= max_posts:
                                 break
-                        except Exception as e:
-                            self.log(f"Skip: {str(e)} for URL: {meme['url']}\n{traceback.format_exc()}")
-                    if posted_count >= max_posts:
-                        break
-                self.log(f"Cycle complete. Sleeping for {interval / 60:.2f} minutes.")
+                        if posted_count >= max_posts:
+                            break
+                    self.log(f"Cycle complete. Posted {posted_count} items.")
+                    if posted_count > 0:
+                        break # Exit retry loop if posts were made
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        self.log(f"No new posts found. Retrying in {retry_delay / 60:.0f} minutes (retry {retry_count}/{max_retries}).")
+                        self.status_label.configure(text=f"Status: Retrying in {retry_delay / 60:.0f} min")
+                        for _ in range(retry_delay):
+                            if not self.running:
+                                self.log("Retry sleep interrupted by stop.")
+                                break
+                            time.sleep(1)
+                    else:
+                        self.log(f"Max retries ({max_retries}) reached with no new posts. Sleeping for full interval.")
                 self.status_label.configure(text="Status: Sleeping")
-                actual_sleep = time.time() + interval
-                time.sleep(interval)
-                self.log(f"Woke up after {(time.time() - actual_sleep + interval) / 60:.2f} minutes.")
+                start_sleep = time.time()
+                for _ in range(interval):
+                    if not self.running:
+                        self.log("Sleep interrupted by stop.")
+                        break
+                    time.sleep(1)
+                else:
+                    self.log(f"Slept for {(time.time() - start_sleep) / 60:.2f} minutes.")
             except Exception as e:
-                self.log(f"Error in cycle: {str(e)}\n{traceback.format_exc()}")
+                self.log(f"Cycle error: {str(e)}\n{traceback.format_exc()}")
+                time.sleep(60) # Prevent rapid looping on cycle errors
         self.status_label.configure(text="Status: Stopped")
 
     def start(self):
@@ -227,7 +518,7 @@ class KayoMemeMagnetApp:
             self.start_button.configure(state="disabled")
             self.stop_button.configure(state="normal")
             threading.Thread(target=self.run_loop, daemon=True).start()
-            self.log("Started automation.")
+            self.log("Automation started.")
             self.status_label.configure(text="Status: Running")
 
     def stop(self):
