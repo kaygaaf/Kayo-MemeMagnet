@@ -10,13 +10,14 @@ A slick Python app with a modern GUI to automatically snatch the hottest memes a
 - **Modern GUI**: Built with CustomTkinter for a stunning, theme-aware interface (light/dark mode support).
 - **Configurable**: Save settings in `config.ini` for easy reuse, with adjustable intervals and post limits.
 - **Robust Automation**: Runs in a background thread with retry logic for network hiccups.
+- **Dynamic Hashtags**: Grabs trending tags from X and blends them with meme keywords for maximum engagement.
 
 ## Tech Stack 🛠️
 - **Python 🐍**: Core language (3.8+).
 - **Libraries**:
   - `tweepy` for X API integration.
   - `customtkinter` for the GUI (install via `pip install customtkinter`).
-  - `urllib.request` for Reddit scraping.
+  - `requests` for Reddit scraping.
   - `configparser` for config management.
 
 ## Installation 💾
