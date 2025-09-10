@@ -13,6 +13,7 @@ from urllib.parse import urlparse, unquote
 import ffmpeg # pip install ffmpeg-python
 from PIL import Image # pip install pillow
 import base64
+import re
 
 class KayoMemeMagnetApp:
     def __init__(self, root):
@@ -23,6 +24,12 @@ class KayoMemeMagnetApp:
         self.posted_urls = self.load_posted_urls()
         self.config_file = 'config.ini'
         self.config = configparser.ConfigParser()
+        self.session = requests.Session()
+        self.session.headers.update({'User-Agent': 'KayoMemeMagnet/1.0'})
+        self.api = None
+        self.client = None
+        self.trending_hashtags = []
+        self.last_trending_update = 0
         customtkinter.set_appearance_mode("System")
         customtkinter.set_default_color_theme("blue")
         input_frame = customtkinter.CTkFrame(root, corner_radius=10)
@@ -130,8 +137,7 @@ class KayoMemeMagnetApp:
 
     def fetch_popular_memes(self, subreddit, limit, min_upvotes):
         url = f"https://www.reddit.com/r/{subreddit}/hot.json?limit={limit}"
-        headers = {'User-Agent': 'KayoMemeMagnet/1.0'}
-        response = requests.get(url, headers=headers)
+        response = self.session.get(url, timeout=10)
         response.raise_for_status()
         data = response.json()
         posts = data['data']['children']
@@ -307,7 +313,7 @@ class KayoMemeMagnetApp:
                 video_path = os.path.join(temp_dir, f"video{ext}")
                 audio_path = os.path.join(temp_dir, "audio.mp3")
                 self.log(f"Downloading video for {meme['title']} from {video_url}")
-                with requests.get(video_url, headers={'User-Agent': 'KayoMemeMagnet/1.0'}, stream=True) as r:
+                with self.session.get(video_url, stream=True, timeout=30) as r:
                     r.raise_for_status()
                     with open(video_path, 'wb') as f:
                         for chunk in r.iter_content(8192):
@@ -319,7 +325,7 @@ class KayoMemeMagnetApp:
                     self.log(f"Skipping video due to FFmpeg issue: {str(e)}")
                     raise
                 self.log(f"Downloading audio for {meme['title']} from {audio_url}")
-                with requests.get(audio_url, headers={'User-Agent': 'KayoMemeMagnet/1.0'}, stream=True) as r:
+                with self.session.get(audio_url, stream=True, timeout=30) as r:
                     if r.status_code != 200:
                         self.log(f"Audio download failed with status {r.status_code}, trying alternative URLs")
                         alternative_urls = [
@@ -329,7 +335,7 @@ class KayoMemeMagnetApp:
                         ]
                         for alt_url in alternative_urls:
                             self.log(f"Trying alternative audio URL: {alt_url}")
-                            r = requests.get(alt_url, headers={'User-Agent': 'KayoMemeMagnet/1.0'}, stream=True)
+                            r = self.session.get(alt_url, stream=True, timeout=30)
                             if r.status_code == 200:
                                 break
                         r.raise_for_status()
@@ -385,7 +391,7 @@ class KayoMemeMagnetApp:
                 ext = os.path.splitext(filename)[1] or ('.mp4' if meme.get('is_video') else '.jpg')
                 path = os.path.join(temp_dir, f"media{ext}")
                 self.log(f"Downloading {'video' if meme.get('is_video') else 'image'} for {meme['title']} from {url}")
-                with requests.get(url, headers={'User-Agent': 'KayoMemeMagnet/1.0'}, stream=True) as r:
+                with self.session.get(url, stream=True, timeout=30) as r:
                     r.raise_for_status()
                     with open(path, 'wb') as f:
                         for chunk in r.iter_content(8192):
@@ -410,24 +416,80 @@ class KayoMemeMagnetApp:
                 os.remove(output_path)
             raise
 
+    def init_api(self):
+        if not self.api or not self.client:
+            auth = tweepy.OAuth1UserHandler(
+                self.consumer_key.get(),
+                self.consumer_secret.get(),
+                self.access_token.get(),
+                self.access_secret.get(),
+            )
+            self.api = tweepy.API(auth)
+            self.client = tweepy.Client(
+                consumer_key=self.consumer_key.get(),
+                consumer_secret=self.consumer_secret.get(),
+                access_token=self.access_token.get(),
+                access_token_secret=self.access_secret.get(),
+            )
+
+    def update_trending_hashtags(self, woeid: int = 1):
+        now = time.time()
+        if now - self.last_trending_update < 3600 and self.trending_hashtags:
+            return
+        try:
+            self.init_api()
+            trends = self.api.get_place_trends(id=woeid)
+            self.trending_hashtags = [t['name'] for t in trends[0]['trends'] if t['name'].startswith('#')]
+            self.last_trending_update = now
+            if self.trending_hashtags:
+                self.log(f"Trending hashtags refreshed: {', '.join(self.trending_hashtags[:5])}")
+        except Exception as e:
+            self.log(f"Trending hashtags fetch failed: {str(e)}")
+            self.trending_hashtags = []
+            self.last_trending_update = now
+
+    def generate_hashtags(self, title: str, max_len: int) -> str:
+        self.update_trending_hashtags()
+        words = re.findall(r"\w+", title.lower())
+        base_tags = ['#' + w for w in words[:3]]
+        tags = []
+        for tag in self.trending_hashtags:
+            if tag.lower().lstrip('#') in words and tag not in tags:
+                tags.append(tag)
+        for tag in base_tags:
+            if tag not in tags:
+                tags.append(tag)
+        result = ''
+        for tag in tags:
+            sep = ' ' if result else ''
+            if len(result) + len(sep) + len(tag) <= max_len:
+                result += sep + tag
+            else:
+                break
+        return result
+
     def _format_tweet(self, title, permalink):
         # Obfuscated trademark string
         tm = base64.b64decode("S2F5by1NZW1lTWFnbmV0").decode('utf-8')
         source_str = f" (Source: {permalink} {tm})"
-        max_title_len = 280 - len(source_str)
+        base_len = 280 - len(source_str)
+        hashtags = self.generate_hashtags(title, base_len - len(title) - 1)
+        max_title_len = base_len - (len(hashtags) + 1 if hashtags else 0)
         if len(title) > max_title_len:
             title = title[:max_title_len - 3] + '...'
-        return title + source_str
+            hashtags = self.generate_hashtags(title, base_len - len(title) - 1)
+        tweet = title
+        if hashtags:
+            tweet += ' ' + hashtags
+        tweet += source_str
+        return tweet
 
     def post_to_x(self, title, permalink, media_path):
         try:
-            auth = tweepy.OAuth1UserHandler(self.consumer_key.get(), self.consumer_secret.get(), self.access_token.get(), self.access_secret.get())
-            api = tweepy.API(auth)
-            client = tweepy.Client(consumer_key=self.consumer_key.get(), consumer_secret=self.consumer_secret.get(),
-                                   access_token=self.access_token.get(), access_token_secret=self.access_secret.get())
-            media = api.media_upload(media_path)
+            self.init_api()
+            media = self.api.media_upload(media_path)
             tweet_text = self._format_tweet(title, permalink)
-            client.create_tweet(text=tweet_text, media_ids=[media.media_id])
+            self.client.create_tweet(text=tweet_text, media_ids=[media.media_id])
             self.log(f"Posted: {tweet_text}")
             return True
         except tweepy.errors.TweepyException as e:
